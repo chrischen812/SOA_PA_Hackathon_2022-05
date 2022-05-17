@@ -1,0 +1,404 @@
+---test %>%
+ group_by(Type) %>%
+  select(Type)
+title: "PA Hackathon - Home Prices"
+author: "Christopher Chen"
+date: '2022-05-13'
+output: html_document
+---
+
+
+```{r }
+library(readr)
+library(caret)
+library(dplyr)
+library(corrplot)
+library(RColorBrewer)
+library(tidyr)
+library(MASS)
+library(tree)
+library(randomForest)
+```
+
+
+```{r }
+train <- read_csv("C:/Users/chris/Documents/Projects/GitHub R/PA - Hackathon - 20220513/beginner_train - Original.csv")
+test <- read_csv("C:/Users/chris/Documents/Projects/GitHub R/PA - Hackathon - 20220513/beginner_test - Original.csv")
+```
+
+
+```{r } 
+#Outliers Handling 
+train_new <- train %>%
+  	mutate(
+  	  Total_spaces = ifelse(Total_spaces<0, abs(Total_spaces), Total_spaces),
+  	  Garage_spaces = ifelse(Garage_spaces<0, abs(Garage_spaces), Garage_spaces),
+  	  Tax_assessed_value = ifelse(Listed_Price==0,0,Tax_assessed_value),
+  	  Annual_tax_amount = ifelse(Listed_Price==0,0,Annual_tax_amount),
+  	  Bedrooms_N = as.numeric(Bedrooms),
+  	  Bathrooms_N = as.numeric(Bathrooms),
+  	  Bedrooms_N1 = ifelse(is.na(Bedrooms_N),as.numeric(Bathrooms),Bedrooms_N),
+  	  Bathrooms = ifelse(Bathrooms_N == 0, NA, Bathrooms_N),
+  	  Bedrooms = ifelse(Bedrooms_N1 == 0, NA, Bedrooms_N1),
+  	  Total_spaces = ifelse(Total_spaces == 0, NA, Total_spaces),
+  	  Garage_spaces = ifelse(Garage_spaces == 0, NA, Garage_spaces),
+  	  Total_interior_livable_area = ifelse(Total_interior_livable_area>50000,NA,Total_interior_livable_area),
+  	  Lot = ifelse(Lot>100000000 | Lot <= 1,NA,Lot),
+  	  Last_Sold_Price = ifelse(Last_Sold_Price<1000,0,Last_Sold_Price),
+  	  Listed_On = as.Date(Listed_On, format = "%m/%d/%Y"),
+  	  Last_Sold_On = ifelse(is.na(Last_Sold_On), NA, as.Date(Last_Sold_On, format = "%m/%d/%Y")),
+  	  Listed_On = ifelse(Listed_On < Last_Sold_On & !is.na(Last_Sold_On),Last_Sold_On,Listed_On),
+    	Type = ifelse(Type %in% c("SingleFamily","Condo","Townhouse", "MultiFamily","MobileManufactured","VacantLand"), Type, "Unknown"),
+  	  Listed_Price = ifelse(Last_Sold_Price>Listed_Price, Last_Sold_Price, Listed_Price),
+  	  Sold_Price = ifelse(Id==19827, Listed_Price,Sold_Price),
+  	  Listed_Price = ifelse(((Sold_Price-Listed_Price)/Listed_Price) >= 1, Sold_Price, Listed_Price),
+  	  Year_built = ifelse(Id==3180, NA, Year_built),
+  	  Last_Sold_Price = ifelse(is.na(Last_Sold_Price),Tax_assessed_value,Last_Sold_Price))
+  
+
+
+```
+
+
+
+```{r }
+#Auto fill for missing values
+train_new1 <- train_new %>%
+  filter(!(Year_built < 1000 | Year_built > 2200)) %>%
+  arrange(Sold_Price, Lot) %>%
+  fill(Lot, .direction = 'down') %>%
+  arrange(Sold_Price, Full_bathrooms) %>%
+  fill(Full_bathrooms, .direction = 'down') %>%
+  arrange(Sold_Price, Bathrooms) %>%
+  fill(Bathrooms, .direction = 'down') %>%
+  arrange(Sold_Price, Bedrooms) %>%
+  fill(Bedrooms, .direction = 'down') %>%
+  arrange(Sold_Price, Total_interior_livable_area) %>%
+  fill(Total_interior_livable_area, .direction = 'down') %>%
+  arrange(Sold_Price, Total_spaces) %>%
+  fill(Total_spaces, .direction = 'down') %>%
+  arrange(Sold_Price, Garage_spaces) %>%
+  fill(Garage_spaces, .direction = 'down') %>%
+  arrange(Sold_Price, Elementary_School_Score) %>%
+  fill(Elementary_School_Score, .direction = 'down') %>%
+  arrange(Sold_Price, Elementary_School_Distance ) %>%
+  fill(Elementary_School_Distance, .direction = 'down') %>%
+  arrange(Sold_Price, Middle_School_Score) %>%
+  fill(Middle_School_Score, .direction = 'down') %>%
+  arrange(Sold_Price, Middle_School_Distance) %>%
+  fill(Middle_School_Distance, .direction = 'down') %>%
+  arrange(Sold_Price, High_School_Score) %>%
+  fill(High_School_Score, .direction = 'down') %>%
+  arrange(Sold_Price, High_School_Distance) %>%
+  fill(High_School_Distance, .direction = 'down') %>%
+  arrange(Sold_Price, Listed_Price) %>%
+  fill(Listed_Price, .direction = 'down') %>%
+  arrange(Sold_Price, Last_Sold_Price) %>%
+  fill(Last_Sold_Price, .direction = 'down') %>%
+  arrange(Sold_Price, Tax_assessed_value) %>%
+  fill(Tax_assessed_value, .direction = 'down') %>%
+  arrange(Sold_Price, Annual_tax_amount) %>%
+  fill(Annual_tax_amount, .direction = 'down') %>%
+  filter(!(is.na(Garage_spaces)))
+  
+
+# create normalization function
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+# create normalization function
+factorize <- function(x) {
+  return (as.factor(x))
+}
+# normalize the DataSet data
+#DataSet_n <- as.data.frame(lapply(train_new1[,1:20], factorize))
+DataSet_n <- train_new1 %>%
+            mutate(Time_Diff = as.Date("5/15/2022", format = "%m/%d/%Y") - Listed_On,
+  	               Inflation = (Sold_Price - Listed_Price) / as.numeric(Time_Diff))
+
+
+```
+
+
+```{r }
+#test transformed
+test_new <- test %>%
+            mutate(Sold_Price = Listed_Price,
+                    Bedrooms_N = as.numeric(Bedrooms),
+          	        Bathrooms_N = as.numeric(Bathrooms),
+          	        Bedrooms_N1 = ifelse(is.na(Bedrooms_N),as.numeric(Bathrooms),Bedrooms_N),
+          	        Bathrooms = ifelse(Bathrooms_N == 0, NA, Bathrooms_N),
+          	        Bedrooms = ifelse(Bedrooms_N1 == 0, NA, Bedrooms_N1),
+          	    	  Listed_On = as.numeric(as.Date(Listed_On, format = "%m/%d/%Y")),
+          	        Last_Sold_On = ifelse(is.na(Last_Sold_On), NA, as.Date(Last_Sold_On, format = "%m/%d/%Y")))
+
+#train_new1 = train_new1[,!(names(train_new1) %in% c("Bedrooms_N","Bathrooms_N","Bedrooms_N1"))]
+#test_new = test_new[,!(names(test_new) %in% c("Bedrooms_N","Bathrooms_N","Bedrooms_N1"))]
+#test_new3 <- union(train_new1,test_new)
+
+test_new <- test_new %>%
+mutate(
+  	  Total_spaces = ifelse(Total_spaces<0, abs(Total_spaces), Total_spaces),
+  	  Garage_spaces = ifelse(Garage_spaces<0, abs(Garage_spaces), Garage_spaces),
+  	  Tax_assessed_value = ifelse(Listed_Price==0,0,Tax_assessed_value),
+  	  Annual_tax_amount = ifelse(Listed_Price==0,0,Annual_tax_amount),
+  	  Bedrooms_N = as.numeric(Bedrooms),
+  	  Bathrooms_N = as.numeric(Bathrooms),
+  	  Bedrooms_N1 = ifelse(is.na(Bedrooms_N),as.numeric(Bathrooms),Bedrooms_N),
+  	  Bathrooms = ifelse(Bathrooms_N == 0, NA, Bathrooms_N),
+  	  Bedrooms = ifelse(Bedrooms_N1 == 0, NA, Bedrooms_N1),
+  	  Total_spaces = ifelse(Total_spaces == 0, NA, Total_spaces),
+  	  Garage_spaces = ifelse(Garage_spaces == 0, NA, Garage_spaces),
+  	  Total_interior_livable_area = ifelse(Total_interior_livable_area>50000 | Total_interior_livable_area <10,NA,Total_interior_livable_area),
+  	  Lot = ifelse(Lot>100000000 | Lot <= 1,NA,Lot),
+  	  Last_Sold_Price = ifelse(Last_Sold_Price<1000,0,Last_Sold_Price),
+    	Type = ifelse(Type %in% c("SingleFamily","Condo","Townhouse", "MultiFamily","MobileManufactured","VacantLand"), Type, "Unknown"),
+  	  Year_built = ifelse(Year_built==0|Year_built>2200,NA,Year_built))
+  
+
+```
+
+```{r }
+test_new1 <- test_new %>%
+  arrange(Sold_Price, Year_built) %>%
+  fill(Year_built, .direction = 'down') %>%
+  arrange(Sold_Price, Lot) %>%
+  fill(Lot, .direction = 'down') %>%
+  arrange(Sold_Price, Full_bathrooms) %>%
+  fill(Full_bathrooms, .direction = 'down') %>%
+  arrange(Sold_Price, Bathrooms) %>%
+  fill(Bathrooms, .direction = 'down') %>%
+  arrange(Sold_Price, Bedrooms) %>%
+  fill(Bedrooms, .direction = 'down') %>%
+  arrange(Sold_Price, Total_interior_livable_area) %>%
+  fill(Total_interior_livable_area, .direction = 'down') %>%
+  arrange(Sold_Price, Total_spaces) %>%
+  fill(Total_spaces, .direction = 'down') %>%
+  arrange(Sold_Price, Garage_spaces) %>%
+  fill(Garage_spaces, .direction = 'down') %>%
+  arrange(Sold_Price, Elementary_School_Score) %>%
+  fill(Elementary_School_Score, .direction = 'down') %>%
+  arrange(Sold_Price, Elementary_School_Distance ) %>%
+  fill(Elementary_School_Distance, .direction = 'down') %>%
+  arrange(Sold_Price, Middle_School_Score) %>%
+  fill(Middle_School_Score, .direction = 'down') %>%
+  arrange(Sold_Price, Middle_School_Distance) %>%
+  fill(Middle_School_Distance, .direction = 'down') %>%
+  arrange(Sold_Price, High_School_Score) %>%
+  fill(High_School_Score, .direction = 'down') %>%
+  arrange(Sold_Price, High_School_Distance) %>%
+  fill(High_School_Distance, .direction = 'down') %>%
+  arrange(Sold_Price, Listed_Price) %>%
+  fill(Listed_Price, .direction = 'down') %>%
+  arrange(Sold_Price, Last_Sold_Price) %>%
+  fill(Last_Sold_Price, .direction = 'down') %>%
+  arrange(Sold_Price, Tax_assessed_value) %>%
+  fill(Tax_assessed_value, .direction = 'down') %>%
+  arrange(Sold_Price, Annual_tax_amount) %>%
+  fill(Annual_tax_amount, .direction = 'down')
+
+#write.csv(test_new1,"C:/Users/chris/Documents/Projects/GitHub R/PA - Hackathon - 20220513/Test_new1.csv")
+
+test_new1 <- test_new1 %>%
+    mutate(Time_Diff = as.Date("5/15/2022", format = "%m/%d/%Y") - Listed_On,
+  	     Inflation = (Sold_Price - Listed_Price) / as.numeric(Time_Diff)) %>%
+    filter(Id >= 37439)
+
+test_new1 = test_new1[,!(names(test_new1) %in% c("Listed_On","Last_Sold_On","Bedrooms_N","Bathrooms_N","Bedrooms_N1"))]
+
+#Transformed Data
+dmy <- dummyVars(" ~ .", data = test_new1)
+transformed_data_test <- data.frame(predict(dmy, newdata = test_new1))
+  
+```
+
+Approach 1 - train with Regression Tree (low precision)
+```{r }
+#Fitting with Regression Tree model 
+set.seed(1)
+
+train = sample(1:nrow(transformed_data), nrow(transformed_data)/2)
+tree.boston=tree(Inflation~.,transformed_data,subset=train)
+summary(tree.boston)
+plot(tree.boston)
+text(tree.boston,pretty=0)
+
+transformed_data_test$yhat=predict(tree.boston,newdata=transformed_data_test)
+write.csv(transformed_data_test,"C:/Users/chris/Documents/Projects/GitHub R/PA - Hackathon - 20220513/Test_new_tree1.csv")
+```
+
+Approach 1 - train with Random Forest (Best accuracy model)
+```{r }
+#Fitting with Random Forest (Best accuracy)
+set.seed(1)
+dmy <- dummyVars(" ~ .", data = DataSet_n)
+transformed_data <- data.frame(predict(dmy, newdata = DataSet_n))
+
+transformed_data = transformed_data[,(names(transformed_data) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Sold_Price","Elementary_School_Score","Middle_School_Score","High_School_Score","TypeSingleFamily","Inflation","Time_Diff"))]
+
+transformed_data_test_train = transformed_data_test[,(names(transformed_data_test) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Sold_Price","Elementary_School_Score","Middle_School_Score","High_School_Score","TypeSingleFamily","Inflation","Time_Diff"))]
+
+transformed_data_train <- union(transformed_data,transformed_data_test_train)
+
+
+bag.boston=randomForest(Sold_Price~.,data=transformed_data_train,mtry=14,importance=TRUE)
+bag.boston
+
+transformed_data_test_2 = transformed_data_test[,(names(transformed_data_test) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Id","Elementary_School_Score","Middle_School_Score","High_School_Score","TypeSingleFamily","Inflation","Time_Diff"))]
+
+
+
+transformed_data_test_2$yhat=predict(bag.boston,newdata=transformed_data_test_2)
+
+write.csv(transformed_data_test_2,"C:/Users/chris/Documents/Projects/GitHub R/PA - Hackathon - 20220513/Test_new_bag6.csv")
+
+
+```
+
+Approach 1 - train with GBM (Medium accuracy model with negative prediction value)
+```{r }
+#Fitting with GBM
+library(gbm)
+set.seed(1)
+dmy <- dummyVars(" ~ .", data = DataSet_n)
+transformed_data <- data.frame(predict(dmy, newdata = DataSet_n))
+
+transformed_data = transformed_data[,(names(transformed_data) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Sold_Price","Elementary_School_Score","Middle_School_Score","High_School_Score","Inflation","Time_Diff"))]
+
+transformed_data_test_train = transformed_data_test[,(names(transformed_data_test) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Sold_Price","Elementary_School_Score","Middle_School_Score","High_School_Score","Inflation","Time_Diff"))]
+
+transformed_data_train <- union(transformed_data,transformed_data_test_train)
+
+boost.boston=gbm(Sold_Price~.,data=transformed_data_train,distribution="gaussian",n.trees=10000,interaction.depth=4)
+
+
+transformed_data_test_2 = transformed_data_test[,(names(transformed_data_test) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Sold_Price","Elementary_School_Score","Middle_School_Score","High_School_Score","Inflation","Time_Diff","Id"))]
+transformed_data_test_2$yhat.boost=predict(boost.boston,newdata=transformed_data_test_2,n.trees=10000)
+
+write.csv(transformed_data_test_2,"C:/Users/chris/Documents/Projects/GitHub R/PA - Hackathon - 20220513/test_new1_boost7.csv")
+
+plot(transformed_data_test$Listed_Price, transformed_data_test$yhat.boost)
+abline(0,1)
+```
+Correlations Plot 
+```{r }
+# create normalization function
+normalize <- function(x) {
+  return ((x - min(x)) / (max(x) - min(x)))
+}
+
+# normalize the DataSet data
+
+M<-cor(train_new2)
+corrplot(M, method="color")
+
+```
+
+
+
+
+#Approach 2 -
+Consolidate Train + Test, missing values are assigned with -1 and kept in set.
+```{r  } 
+train_new2 <- train_new %>%
+  mutate(Bedrooms = ifelse(is.na(Bedrooms),-1,Bedrooms),
+         Bathrooms = ifelse(is.na(Bathrooms),-1,Bathrooms),
+         Full_bathrooms = ifelse(is.na(Full_bathrooms),-1,Full_bathrooms),
+         Total_interior_livable_area = ifelse(is.na( Total_interior_livable_area),-1,Total_interior_livable_area),
+         Tax_assessed_value = ifelse(is.na(Tax_assessed_value),-1,Tax_assessed_value),
+         Annual_tax_amount = ifelse(is.na(Annual_tax_amount),-1,Annual_tax_amount),
+         Listed_Price = ifelse(is.na(Listed_Price),-1,Listed_Price),
+         Last_Sold_Price = ifelse(is.na(Last_Sold_Price),-1,Last_Sold_Price),
+         Elementary_School_Score = ifelse(is.na(Elementary_School_Score),-1,Elementary_School_Score),
+         Middle_School_Score = ifelse(is.na(Middle_School_Score),-1,Middle_School_Score),
+         High_School_Score = ifelse(is.na(High_School_Score),-1,High_School_Score),
+         Elementary_School_Distance = ifelse(is.na(Elementary_School_Distance),-1,Elementary_School_Distance),
+         Middle_School_Distance = ifelse(is.na(Middle_School_Distance),-1,Middle_School_Distance),
+         High_School_Distance = ifelse(is.na(High_School_Distance),-1,High_School_Distance),
+         Lot = ifelse(is.na(Lot),-1,Lot))
+
+
+test_new2 <- test_new %>%
+  mutate(Bedrooms = ifelse(is.na(Bedrooms),-1,Bedrooms),
+         Bathrooms = ifelse(is.na(Bathrooms),-1,Bathrooms),
+         Full_bathrooms = ifelse(is.na(Full_bathrooms),-1,Full_bathrooms),
+         Total_interior_livable_area = ifelse(is.na( Total_interior_livable_area),-1,Total_interior_livable_area),
+         Tax_assessed_value = ifelse(is.na(Tax_assessed_value),-1,Tax_assessed_value),
+         Annual_tax_amount = ifelse(is.na(Annual_tax_amount),-1,Annual_tax_amount),
+         Listed_Price = ifelse(is.na(Listed_Price),-1,Listed_Price),
+         Last_Sold_Price = ifelse(is.na(Last_Sold_Price),-1,Last_Sold_Price),
+         Elementary_School_Score = ifelse(is.na(Elementary_School_Score),-1,Elementary_School_Score),
+         Middle_School_Score = ifelse(is.na(Middle_School_Score),-1,Middle_School_Score),
+         High_School_Score = ifelse(is.na(High_School_Score),-1,High_School_Score),
+         Elementary_School_Distance = ifelse(is.na(Elementary_School_Distance),-1,Elementary_School_Distance),
+         Middle_School_Distance = ifelse(is.na(Middle_School_Distance),-1,Middle_School_Distance),
+         High_School_Distance = ifelse(is.na(High_School_Distance),-1,High_School_Distance),
+         Lot = ifelse(is.na(Lot),-1,Lot))
+         
+
+
+```
+
+Approach 2 - Train with (Train + Test) Random Forest 
+```{r }
+set.seed(1)
+
+train_new2 = train_new2[,(names(train_new2) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Sold_Price","Elementary_School_Score","Middle_School_Score","High_School_Score","Elementary_School_Distance","Middle_School_Distance","High_School_Distance","Lot"))]
+
+test_new2_train = test_new2[,(names(test_new2) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Sold_Price","Elementary_School_Score","Middle_School_Score","High_School_Score","Elementary_School_Distance","Middle_School_Distance","High_School_Distance","Lot"))]
+
+transformed_data_train <- union(test_new2_train,train_new2)
+
+bag.boston=randomForest(Sold_Price~.,data=transformed_data_train,mtry=15,importance=TRUE)
+bag.boston
+
+test_new2_test = test_new2[,(names(test_new2) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Id","Elementary_School_Score","Middle_School_Score","High_School_Score","Elementary_School_Distance","Middle_School_Distance","High_School_Distance","Lot"))]
+
+test_new2_test$yhat=predict(bag.boston,newdata=test_new2_test)
+
+test_new2_test <- test_new2_test %>%
+    filter(Id >= 37439)
+
+write.csv(test_new2_test,"C:/Users/chris/Documents/Projects/GitHub R/PA - Hackathon - 20220513/Test_new_bag8.csv")
+
+
+```
+
+Approach 2 - Train with (Train + Test) Random Forest with Test Sold Prices being predicted by the chuck prior - Second Train 
+```{r }
+test_new2_test <- test_new2_test %>%
+  mutate(Sold_Price = yhat)
+
+test_new2_test = test_new2_test[,(names(test_new2_test) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Sold_Price","Elementary_School_Score","Middle_School_Score","High_School_Score","Elementary_School_Distance","Middle_School_Distance","High_School_Distance","Lot"))]
+
+transformed_data_train <- union(test_new2_test,train_new2)
+
+bag.boston=randomForest(Sold_Price~.,data=transformed_data_train,mtry=15,importance=TRUE)
+
+test_new2_test = test_new2[,(names(test_new2) %in% c("Bedrooms","Bathrooms","Full_bathrooms","Total_interior_livable_area","Tax_assessed_value","Annual_tax_amount","Listed_Price","Last_Sold_Price","Id","Elementary_School_Score","Middle_School_Score","High_School_Score","Elementary_School_Distance","Middle_School_Distance","High_School_Distance","Lot"))]
+
+test_new2_test$yhat=predict(bag.boston,newdata=test_new2_test)
+
+test_new2_test <- test_new2_test %>%
+    filter(Id >= 37439)
+
+write.csv(test_new2_test,"C:/Users/chris/Documents/Projects/GitHub R/PA - Hackathon - 20220513/Test_new_bag9.csv")
+
+```
+
+Approach 2 - Train with (Train + Test) GBM
+```{r }
+library(gbm)
+set.seed(1)
+
+boost.boston=gbm(Sold_Price~.,data=transformed_data_train,distribution="gaussian",n.trees=10000,interaction.depth=5)
+
+test_new2_test$yhat.boost=predict(boost.boston,newdata=test_new2_test,n.trees=10000)
+
+write.csv(test_new2_test,"C:/Users/chris/Documents/Projects/GitHub R/PA - Hackathon - 20220513/test_new1_boost6.csv")
+
+plot(transformed_data_test$Listed_Price, transformed_data_test$yhat.boost)
+abline(0,1)
+```
+
+
